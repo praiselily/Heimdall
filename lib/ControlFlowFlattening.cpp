@@ -17,6 +17,9 @@
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Transforms/Utils/Local.h"
 
+#include <algorithm>
+#include <numeric>
+#include <random>
 #include <vector>
 
 #define DEBUG_TYPE "heimdall-cff"
@@ -161,23 +164,42 @@ bool flattenFunction(Function &F) {
   if (Blocks.empty())
     return false;
 
+  // State IDs are a shuffled permutation of [0, Blocks.size()), not a plain
+  // 0..N-1 walk in the function's original block order. Block order at this
+  // point is still essentially source order, so a sequential assignment
+  // would leave the state constant stored by each block as a de facto
+  // position index: an analyst wouldn't see the original edges, but could
+  // still read off "lower state values come earlier in the function" from
+  // the constants alone, recovering much of the layout the flattening is
+  // meant to hide. The permutation is seeded from the function's name so
+  // builds stay reproducible.
   IntegerType *I32 = Type::getInt32Ty(Ctx);
+  std::vector<uint32_t> StateIds(Blocks.size());
+  std::iota(StateIds.begin(), StateIds.end(), 0);
+  std::seed_seq Seed{std::hash<std::string>{}(F.getName().str()),
+                      static_cast<size_t>(Blocks.size())};
+  std::mt19937 RNG(Seed);
+  std::shuffle(StateIds.begin(), StateIds.end(), RNG);
+
   DenseMap<BasicBlock *, uint32_t> StateOf;
   for (uint32_t I = 0; I < Blocks.size(); ++I)
-    StateOf[Blocks[I]] = I;
+    StateOf[Blocks[I]] = StateIds[I];
 
+  // Deliberately unnamed: these values have no business looking any
+  // different from the rest of the function's ordinary compiler-generated
+  // temporaries. A descriptive name here would be a free signature for
+  // anyone grepping IR, bitcode, or an LTO object's embedded bitcode
+  // section for this specific pass.
   IRBuilder<> EntryBuilder(Entry.getTerminator());
-  AllocaInst *StateVar =
-      EntryBuilder.CreateAlloca(I32, nullptr, "heimdall.state");
+  AllocaInst *StateVar = EntryBuilder.CreateAlloca(I32);
 
-  auto *Dispatcher = BasicBlock::Create(Ctx, "heimdall.dispatch", &F);
+  auto *Dispatcher = BasicBlock::Create(Ctx, "", &F);
   IRBuilder<> DispatchBuilder(Dispatcher);
-  LoadInst *StateLoad =
-      DispatchBuilder.CreateLoad(I32, StateVar, "heimdall.state.load");
+  LoadInst *StateLoad = DispatchBuilder.CreateLoad(I32, StateVar);
 
   // Default case is unreachable: every store to StateVar writes a valid
   // case value.
-  auto *Unreachable = BasicBlock::Create(Ctx, "heimdall.unreachable", &F);
+  auto *Unreachable = BasicBlock::Create(Ctx, "", &F);
   IRBuilder<>(Unreachable).CreateUnreachable();
 
   SwitchInst *Switch =
@@ -197,19 +219,17 @@ bool flattenFunction(Function &F) {
       Value *Cond = Br->getCondition();
       Value *TrueState = ConstantInt::get(I32, StateOf[Br->getSuccessor(0)]);
       Value *FalseState = ConstantInt::get(I32, StateOf[Br->getSuccessor(1)]);
-      Value *Sel = EntryBuilder.CreateSelect(Cond, TrueState, FalseState,
-                                              "heimdall.sel");
+      Value *Sel = EntryBuilder.CreateSelect(Cond, TrueState, FalseState);
       EntryBuilder.CreateStore(Sel, StateVar);
     }
   } else if (auto *Sw = dyn_cast<SwitchInst>(EntryTerm)) {
     Value *Acc = ConstantInt::get(I32, StateOf[Sw->getDefaultDest()]);
     for (auto Case : Sw->cases()) {
-      Value *CaseMatches = EntryBuilder.CreateICmpEQ(
-          Sw->getCondition(), Case.getCaseValue(), "heimdall.case");
+      Value *CaseMatches = EntryBuilder.CreateICmpEQ(Sw->getCondition(),
+                                                       Case.getCaseValue());
       Value *CaseState =
           ConstantInt::get(I32, StateOf[Case.getCaseSuccessor()]);
-      Acc = EntryBuilder.CreateSelect(CaseMatches, CaseState, Acc,
-                                       "heimdall.sel");
+      Acc = EntryBuilder.CreateSelect(CaseMatches, CaseState, Acc);
     }
     EntryBuilder.CreateStore(Acc, StateVar);
   } else {
@@ -240,19 +260,17 @@ bool flattenFunction(Function &F) {
             ConstantInt::get(I32, StateOf[Br->getSuccessor(0)]);
         Value *FalseState =
             ConstantInt::get(I32, StateOf[Br->getSuccessor(1)]);
-        Value *Sel = Builder.CreateSelect(Cond, TrueState, FalseState,
-                                           "heimdall.sel");
+        Value *Sel = Builder.CreateSelect(Cond, TrueState, FalseState);
         Builder.CreateStore(Sel, StateVar);
       }
     } else if (auto *Sw = dyn_cast<SwitchInst>(Term)) {
       Value *Acc = ConstantInt::get(I32, StateOf[Sw->getDefaultDest()]);
       for (auto Case : Sw->cases()) {
-        Value *CaseMatches = Builder.CreateICmpEQ(
-            Sw->getCondition(), Case.getCaseValue(), "heimdall.case");
+        Value *CaseMatches =
+            Builder.CreateICmpEQ(Sw->getCondition(), Case.getCaseValue());
         Value *CaseState =
             ConstantInt::get(I32, StateOf[Case.getCaseSuccessor()]);
-        Acc = Builder.CreateSelect(CaseMatches, CaseState, Acc,
-                                    "heimdall.sel");
+        Acc = Builder.CreateSelect(CaseMatches, CaseState, Acc);
       }
       Builder.CreateStore(Acc, StateVar);
     } else {

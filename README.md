@@ -58,11 +58,13 @@ were skipped and why.
 
 ## Correctness
 
-Every change to the pass must pass `test/correctness`: three representative
-sample programs (a license-key validator, a config-line parser, a small
-Feistel-cipher routine — chosen for realistic branchy logic, not toy loops)
-are compiled both plain and flattened, run against the same inputs, and
-their output is diffed byte-for-byte.
+Every change to the pass must pass `test/correctness`: sample programs
+(a license-key validator, a config-line parser, a small Feistel-cipher
+routine, plus targeted stress cases for entry-block value demotion, nested
+loops/switches, and an irreducible CFG — see
+[DESIGN.md](DESIGN.md#known-limitations--weaknesses) for what each stress
+case regression-tests and why) are compiled both plain and flattened, run
+against the same inputs, and their output is diffed byte-for-byte.
 
 ```bash
 cmake --build build --target test

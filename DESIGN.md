@@ -126,6 +126,73 @@ This keeps the harness decoupled from the pass itself (it only needs the two
 compiled binaries) so it can later be pointed at other obfuscation passes for
 comparison.
 
+## Known limitations / weaknesses
+
+Found via a code-level audit (no LLVM toolchain was available in that
+session to compile and empirically verify against; treat the "fixed" items
+as fixed-on-paper until exercised by `test/correctness` on a real build):
+
+- **Fixed — entry-block demotion dominance bug.** `demoteCrossBlockValues`
+  originally inserted its stack-slot allocas immediately before the entry
+  block's *terminator* rather than at its *top*. For any value computed
+  early in the entry block and used elsewhere — i.e. almost any non-trivial
+  function — `DemoteRegToStack` inserts that value's store right after its
+  definition, which landed *before* the (too-late) alloca in program order:
+  invalid IR, caught by the pass's own `verifyFunction` call, which would
+  then abort the whole compilation via `report_fatal_error`. Fixed by
+  inserting all demotion allocas at `getFirstInsertionPt()` of the entry
+  block instead. `test/correctness/programs/entry_value_stress.c` is a
+  regression test for this specific shape (values computed in entry, used
+  by later and reconverging blocks).
+- **Fixed — stale "unchanged" report on a rare bail-out path.** If
+  `flattenFunction` bailed out (unsupported entry terminator) *after*
+  `demoteCrossBlockValues` had already mutated the function's IR, it still
+  returned `false` ("unchanged"), which would make the pass report
+  `PreservedAnalyses::all()` to the New Pass Manager — wrong, since the IR
+  had in fact changed, risking stale cached analyses for later passes in
+  the same pipeline run. Fixed by moving the entry-terminator shape check
+  into `findBailOutReason` (eligibility), before any mutation can occur.
+- **Fixed — a stale assertion could abort debug/assertions-enabled
+  builds** on a function whose entry block returns directly while another,
+  unreachable block exists elsewhere in the same function (dead code left
+  by an earlier pass, or hand-written IR) — a shape `F.size() >= 2` does
+  not exclude. Removed the incorrect assumption; the existing terminator
+  dispatch already handles this shape safely (now via the eligibility
+  check above, before it would even reach that code).
+- **Over-conservative irreducible-CFG bail-out (coverage weakness, not a
+  correctness bug).** On inspection, the flattening transform itself never
+  consults `LoopInfo` or relies on any reducibility assumption — it
+  rewrites each block's terminator independently, uniformly, regardless of
+  loop structure. The irreducibility check was carried over from CFF
+  literature as a defensive default rather than a necessity *for this
+  specific transform*. Kept as-is for v1 (unverified relaxations are a bad
+  trade in a security tool), but it means real-world irreducible code
+  (hand-rolled dispatch loops, some compiler-generated state machines) gets
+  *less* obfuscation coverage than it could. `irreducible_dispatch.c`
+  exercises the bail-out path itself (confirms it's safe, i.e. doesn't
+  crash and doesn't miscompile) without yet testing whether relaxing it
+  would also be safe — that needs a real build to investigate further.
+- **Plain CFF is a known, fingerprintable pattern.** A bare
+  dispatcher-loop-plus-switch-over-a-state-variable is exactly the shape
+  OLLVM-style CFF has produced for over a decade; published deobfuscation
+  techniques (symbolic-execution-based and pattern-based "deflattening")
+  specifically target this signature, and a sufficiently capable
+  AI-assisted decompiler could plausibly be pattern-matched against known
+  CFF shapes rather than needing to "reason" its way through the control
+  flow at all. **This means the benchmark should be read as "does this
+  resist a general-purpose LLM reading raw pseudocode," not "does this
+  resist a tool built specifically to undo CFF."** Said more bluntly in
+  [benchmark/README.md](benchmark/README.md#limitations--honesty-notes).
+  Mitigations (opaque predicates on the dispatch condition, state-variable
+  encoding/encryption, multiple interleaved dispatchers) are exactly the
+  "explicitly out of scope for v1" items in the roadmap — this is the
+  concrete reason they matter for v2, not just breadth for its own sake.
+- **No bound on dispatcher/select-chain size.** A function with a very
+  large `switch` (e.g. a generated jump table with hundreds of cases) turns
+  into a chain of that many sequential `select`/`icmp` pairs per rewritten
+  terminator. Not a correctness issue, but unbounded code-size/compile-time
+  blowup on pathological input has not been tested or guarded against.
+
 ## Out of scope for v1
 
 See [README.md](README.md#roadmap).

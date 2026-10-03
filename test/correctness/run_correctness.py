@@ -38,6 +38,33 @@ TEST_CASES = {
         ["ffffffff"],
         ["12345678"],
     ],
+    # Regression test for a bug found in code review: see
+    # entry_value_stress.c for why entry-block-defined, cross-block-used
+    # values need special care during demotion.
+    "entry_value_stress": [
+        ["10", "20", "5"],
+        ["0", "0", "0"],
+        ["-30", "40", "7"],
+        ["200", "1", "1"],
+    ],
+    # Nested loops + an inner switch -- stresses the dispatcher with many
+    # blocks and several independent back-edges feeding it.
+    "nested_state_machine": [
+        ["5", "5", "0"],
+        ["20", "3", "7"],
+        ["1", "1", "3"],
+        ["0", "10", "2"],
+    ],
+    # Irreducible CFG (see irreducible_dispatch.c) -- the pass is expected
+    # to SKIP this function entirely, so plain == flattened output is the
+    # whole point of this case: it confirms the bail-out path is safe, not
+    # that flattening happened.
+    "irreducible_dispatch": [
+        ["50"],
+        ["0"],
+        ["-500"],
+        ["99"],
+    ],
 }
 
 

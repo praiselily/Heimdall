@@ -10,6 +10,7 @@
 #include "llvm/ADT/Statistic.h"
 #include "llvm/Analysis/LoopInfo.h"
 #include "llvm/IR/Constants.h"
+#include "llvm/IR/Dominators.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/Instructions.h"
@@ -39,6 +40,7 @@ enum class SkipReason {
   IrreducibleCFG,
   OptNone,
   Declaration,
+  UnsupportedEntryTerminator,
 };
 
 StringRef skipReasonToString(SkipReason R) {
@@ -58,6 +60,9 @@ StringRef skipReasonToString(SkipReason R) {
     return "function is marked optnone";
   case SkipReason::Declaration:
     return "function is a declaration";
+  case SkipReason::UnsupportedEntryTerminator:
+    return "function's entry block does not end in a br/switch (e.g. "
+           "entry returns directly), so there is nothing to dispatch from";
   }
   llvm_unreachable("unhandled SkipReason");
 }
@@ -72,6 +77,17 @@ SkipReason findBailOutReason(Function &F, LoopInfo &LI) {
     return SkipReason::OptNone;
   if (F.size() < 2)
     return SkipReason::TooSmall;
+
+  // The entry block must end in something flattenFunction knows how to
+  // redirect into the dispatcher. In particular, an entry block that
+  // returns directly is possible even when F.size() >= 2 (e.g. unreachable
+  // dead code elsewhere in F) -- checked here, before any IR is mutated,
+  // so a function that turns out to be ineligible is never left partially
+  // demoted (see flattenFunction's cross-block-value demotion step, which
+  // must not run on a function we're about to skip).
+  Instruction *EntryTerm = F.getEntryBlock().getTerminator();
+  if (!isa<BranchInst>(EntryTerm) && !isa<SwitchInst>(EntryTerm))
+    return SkipReason::UnsupportedEntryTerminator;
 
   for (BasicBlock &BB : F) {
     for (Instruction &I : BB) {
@@ -121,7 +137,18 @@ void demoteCrossBlockValues(Function &F) {
     for (Instruction &I : BB)
       WorkList.push_back(&I);
 
-  BasicBlock *AllocaBlock = &F.getEntryBlock();
+  // All demotion allocas must be inserted at a point that dominates every
+  // def/use they will serve -- i.e. the very top of the entry block, not
+  // merely "somewhere in the entry block". Eligible functions never reach
+  // here with a PHI or landingpad in the entry block (entry has no
+  // predecessors), so getFirstInsertionPt() is exactly that point. Using
+  // the entry *terminator* here instead (an earlier version of this code
+  // did) is wrong: DemoteRegToStack inserts a value's store immediately
+  // after its definition, and for a value defined earlier in the entry
+  // block than the terminator, that store would end up textually *before*
+  // an alloca placed at the terminator -- an alloca that doesn't dominate
+  // its own store, i.e. invalid IR.
+  Instruction *AllocaInsertPt = &*F.getEntryBlock().getFirstInsertionPt();
   for (Instruction *I : WorkList) {
     if (I->getType()->isVoidTy())
       continue;
@@ -134,8 +161,7 @@ void demoteCrossBlockValues(Function &F) {
       }
     }
     if (UsedOutsideDefiningBlock)
-      DemoteRegToStack(*I, /*VolatileLoads=*/false,
-                        AllocaBlock->getTerminator());
+      DemoteRegToStack(*I, /*VolatileLoads=*/false, AllocaInsertPt);
   }
 
   // PHI nodes themselves must also be demoted: DemotePHIToStack replaces a
@@ -146,7 +172,7 @@ void demoteCrossBlockValues(Function &F) {
       if (auto *PN = dyn_cast<PHINode>(&I))
         Phis.push_back(PN);
   for (PHINode *PN : Phis)
-    DemotePHIToStack(PN, AllocaBlock->getTerminator());
+    DemotePHIToStack(PN, AllocaInsertPt);
 }
 
 /// Performs the actual flattening transform on an eligible function.
@@ -200,9 +226,15 @@ bool flattenFunction(Function &F) {
   // Step 5: point the entry block's terminator at the dispatcher instead of
   // its original successor(s), after recording that original target as the
   // first state to run.
+  // Note: the entry block itself can legally terminate in a `ret` even
+  // though F.size() >= 2 -- e.g. entry returns unconditionally while some
+  // other, unreachable block exists elsewhere in F (dead code left behind
+  // by an earlier pass, or just hand-written IR). That isn't "too small"
+  // by our eligibility check, so don't assume otherwise here: the dyn_cast
+  // chain below already falls through to the conservative bail-out at the
+  // bottom for any terminator kind (ReturnInst included) that isn't a
+  // branch or switch.
   Instruction *EntryTerm = Entry.getTerminator();
-  assert(!isa<ReturnInst>(EntryTerm) &&
-         "entry-only function should have bailed out as too small");
   if (auto *Br = dyn_cast<BranchInst>(EntryTerm)) {
     if (Br->isUnconditional()) {
       BasicBlock *Target = Br->getSuccessor(0);

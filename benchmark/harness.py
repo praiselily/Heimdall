@@ -77,19 +77,42 @@ PROGRAMS = {
 }
 
 
-def compile_variant(clang, plugin, src, out, flatten):
-    cmd = [clang, "-O1", str(src), "-o", str(out)]
-    if flatten:
-        cmd += [f"-fpass-plugin={plugin}", "-mllvm", "-passes=heimdall-cff"]
-    subprocess.run(cmd, check=True)
+def compile_variant(clang, opt, plugin, src, out, flatten):
+    if not flatten:
+        subprocess.run([clang, "-O1", str(src), "-o", str(out)], check=True)
+        return
+
+    # clang's -fpass-plugin registers a plugin's callbacks but doesn't splice
+    # an arbitrary registered pass name into its default -O pipeline, so the
+    # pass runs via opt on the emitted IR: emit -O1 IR, run heimdall-cff over
+    # it, then hand the result back to clang for codegen.
+    ll_path = out.with_suffix(".ll")
+    flat_ll_path = out.with_suffix(".flat.ll")
+    subprocess.run(
+        [clang, "-O1", "-S", "-emit-llvm", str(src), "-o", str(ll_path)],
+        check=True,
+    )
+    subprocess.run(
+        [
+            opt,
+            f"-load-pass-plugin={plugin}",
+            "-passes=heimdall-cff",
+            str(ll_path),
+            "-S",
+            "-o",
+            str(flat_ll_path),
+        ],
+        check=True,
+    )
+    subprocess.run([clang, str(flat_ll_path), "-o", str(out)], check=True)
 
 
-def run_one(name, cfg, clang, plugin, ghidra_dir, programs_dir, work_dir, cc, model):
+def run_one(name, cfg, clang, opt, plugin, ghidra_dir, programs_dir, work_dir, cc, model):
     src = programs_dir / f"{name}.c"
     plain_bin = work_dir / f"{name}.plain"
     flat_bin = work_dir / f"{name}.flat"
-    compile_variant(clang, plugin, src, plain_bin, flatten=False)
-    compile_variant(clang, plugin, src, flat_bin, flatten=True)
+    compile_variant(clang, opt, plugin, src, plain_bin, flatten=False)
+    compile_variant(clang, opt, plugin, src, flat_bin, flatten=True)
 
     client = anthropic.Anthropic()
     report = {"program": name, "ground_truth": cfg["ground_truth"], "variants": {}}
@@ -179,6 +202,7 @@ def write_markdown_report(reports, out_path):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--clang", default="clang")
+    ap.add_argument("--opt", default="opt")
     ap.add_argument("--plugin", required=True)
     ap.add_argument("--ghidra-dir", required=True, type=pathlib.Path)
     ap.add_argument(
@@ -205,6 +229,7 @@ def main():
                 name,
                 cfg,
                 args.clang,
+                args.opt,
                 args.plugin,
                 args.ghidra_dir,
                 args.programs_dir,

@@ -14,11 +14,12 @@ obfuscation.
                         (+ heimdall-cff)
 ```
 
-Full description of each stage: [`../DESIGN.md`](../DESIGN.md#benchmark-harness-ai-resistance).
+Full description of each stage: [`../DESIGN.md`](../DESIGN.md#benchmark-harness).
 
 ## Requirements
 
-- A built `HeimdallCFF` plugin (see the top-level [README](../README.md#build)).
+- A built `HeimdallCFF` plugin (see the top-level [README](../README.md#build))
+  and `opt` on `PATH` (or pass `--opt`).
 - [Ghidra](https://ghidra-sre.org/) installed locally; set `GHIDRA_INSTALL_DIR`
   or pass `--ghidra-dir`.
 - `pip install -r requirements.txt`
@@ -50,10 +51,10 @@ human-readable report, linked from the top-level README once generated).
 Both are computed separately for the plain and flattened binary of each
 sample program; the gap between them is the headline result.
 
-## Limitations / honesty notes
+## Limitations
 
 - Three sample programs is a starting point, not a statistically powerful
-  benchmark -- treat results as illustrative, and grow the sample set before
+  benchmark. Treat results as illustrative and grow the sample set before
   citing numbers as general claims.
 - The harness reconstructs the whole decompiled program in one LLM call
   rather than function-by-function, so it also measures the LLM's ability to

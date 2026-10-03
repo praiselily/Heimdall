@@ -1,17 +1,15 @@
-/* Regression test for a bug found in code review: values computed in the
- * ENTRY block and used by later blocks (extremely common -- "int x =
- * compute(); if (x > 0) ...") must be demoted to a stack slot whose alloca
- * sits at the very TOP of the entry block, not merely "somewhere in" it.
- * An earlier version of heimdall-cff placed the alloca right before the
- * entry block's terminator instead, which could insert a value's store
- * *before* the alloca it stores into in program order -- invalid IR that
- * the pass's own verifier would catch and abort on for almost any
- * non-trivial function.
+/* Regression test for entry-block value demotion: values computed in the
+ * ENTRY block and used by later blocks ("int x = compute(); if (x > 0)
+ * ...", one of the most common shapes in real code) must be demoted to a
+ * stack slot whose alloca sits at the top of the entry block, not just
+ * somewhere inside it. An alloca placed later than a store that feeds it
+ * produces invalid IR, which the pass's verifier should catch immediately
+ * if this regresses.
  *
- * This program is deliberately built so several values are computed in the
- * entry block itself (not a pre-header the compiler might insert) and are
- * then consumed by both earlier-in-text and later-in-text sibling blocks,
- * plus loop back-edges, to exercise that path hard.
+ * This program is built so several values are computed in the entry block
+ * itself (not a pre-header the compiler might insert) and are consumed by
+ * both earlier-in-text and later-in-text sibling blocks, plus loop
+ * back-edges, to exercise that path hard.
  */
 #include <stdio.h>
 #include <stdlib.h>

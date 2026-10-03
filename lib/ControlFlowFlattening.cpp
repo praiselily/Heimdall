@@ -8,9 +8,7 @@
 #include "heimdall/ControlFlowFlattening.h"
 
 #include "llvm/ADT/Statistic.h"
-#include "llvm/Analysis/LoopInfo.h"
 #include "llvm/IR/Constants.h"
-#include "llvm/IR/Dominators.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/Instructions.h"
@@ -30,14 +28,13 @@ STATISTIC(NumFunctionsSkipped, "Number of functions skipped (ineligible)");
 
 namespace {
 
-/// Human-readable reason a function was not flattened, for -debug-only and
-/// (optionally) remarks.
+/// Reason a function was rejected for flattening, surfaced via
+/// -debug-only=heimdall-cff.
 enum class SkipReason {
   None,
   TooSmall,
   HasExceptionHandling,
   HasIndirectControlFlow,
-  IrreducibleCFG,
   OptNone,
   Declaration,
   UnsupportedEntryTerminator,
@@ -54,23 +51,19 @@ StringRef skipReasonToString(SkipReason R) {
            "resume/catch*/cleanup*)";
   case SkipReason::HasIndirectControlFlow:
     return "function uses indirectbr or callbr";
-  case SkipReason::IrreducibleCFG:
-    return "function has an irreducible control-flow graph";
   case SkipReason::OptNone:
     return "function is marked optnone";
   case SkipReason::Declaration:
     return "function is a declaration";
   case SkipReason::UnsupportedEntryTerminator:
-    return "function's entry block does not end in a br/switch (e.g. "
-           "entry returns directly), so there is nothing to dispatch from";
+    return "function's entry block does not end in a br/switch";
   }
   llvm_unreachable("unhandled SkipReason");
 }
 
-/// Walks F's instructions looking for constructs we deliberately don't
-/// flatten in v1. Returns the first disqualifying reason found, or
-/// SkipReason::None if F is eligible.
-SkipReason findBailOutReason(Function &F, LoopInfo &LI) {
+/// Returns the first reason F is ineligible for flattening, or
+/// SkipReason::None if it can be transformed.
+SkipReason findBailOutReason(Function &F) {
   if (F.isDeclaration())
     return SkipReason::Declaration;
   if (F.hasFnAttribute(Attribute::OptimizeNone))
@@ -78,13 +71,11 @@ SkipReason findBailOutReason(Function &F, LoopInfo &LI) {
   if (F.size() < 2)
     return SkipReason::TooSmall;
 
-  // The entry block must end in something flattenFunction knows how to
-  // redirect into the dispatcher. In particular, an entry block that
-  // returns directly is possible even when F.size() >= 2 (e.g. unreachable
-  // dead code elsewhere in F) -- checked here, before any IR is mutated,
-  // so a function that turns out to be ineligible is never left partially
-  // demoted (see flattenFunction's cross-block-value demotion step, which
-  // must not run on a function we're about to skip).
+  // flattenFunction only knows how to redirect a br/switch terminator into
+  // the dispatcher. An entry block can legally end in something else (a
+  // direct ret, with other unreachable blocks elsewhere in F keeping
+  // F.size() >= 2) -- checked here, before demoteCrossBlockValues runs, so
+  // a rejected function is never left partially transformed.
   Instruction *EntryTerm = F.getEntryBlock().getTerminator();
   if (!isa<BranchInst>(EntryTerm) && !isa<SwitchInst>(EntryTerm))
     return SkipReason::UnsupportedEntryTerminator;
@@ -101,56 +92,32 @@ SkipReason findBailOutReason(Function &F, LoopInfo &LI) {
     }
   }
 
-  // Irreducibility check: every block that is a loop header should be
-  // reachable only via back-edges recognized by LoopInfo. A cheap proxy for
-  // "LoopInfo didn't fully capture this CFG's cycles" is: count edges into
-  // each block from blocks LoopInfo considers inside some loop, and compare
-  // against what a reducible CFG's natural loop nest implies. LLVM doesn't
-  // expose a single boolean for this, so we use the standard trick: a CFG
-  // is irreducible iff it contains a cycle that LoopInfo's dominator-based
-  // analysis does not report as part of any natural loop. We approximate
-  // this by checking, for every block B with an edge from a block D that B
-  // dominates (i.e. a back-edge), that LI recognizes B as a loop header.
-  // Any back-edge whose target isn't a recognized loop header indicates a
-  // cycle outside LoopInfo's model, i.e. irreducibility.
-  DominatorTree DT(F);
-  for (BasicBlock &BB : F) {
-    for (BasicBlock *Pred : predecessors(&BB)) {
-      if (DT.dominates(&BB, Pred)) {
-        // (Pred -> BB) is a back-edge.
-        if (!LI.isLoopHeader(&BB))
-          return SkipReason::IrreducibleCFG;
-      }
-    }
-  }
-
   return SkipReason::None;
 }
 
-/// Demotes every value defined in `BB` and used outside `BB` (including by
-/// PHI nodes) to a stack slot, so flattening can freely reorder/indirect
-/// control flow without violating SSA dominance. Thin wrapper around LLVM's
-/// own DemoteRegToStack, reused rather than reimplemented (see DESIGN.md).
+/// Demotes every value defined in one block and used in another (including
+/// PHI nodes and the values feeding them) to a stack slot, via LLVM's own
+/// DemoteRegToStack/DemotePHIToStack, so flattening can freely redirect
+/// control flow without violating SSA dominance.
 void demoteCrossBlockValues(Function &F) {
   std::vector<Instruction *> WorkList;
   for (BasicBlock &BB : F)
     for (Instruction &I : BB)
       WorkList.push_back(&I);
 
-  // All demotion allocas must be inserted at a point that dominates every
-  // def/use they will serve -- i.e. the very top of the entry block, not
-  // merely "somewhere in the entry block". Eligible functions never reach
-  // here with a PHI or landingpad in the entry block (entry has no
-  // predecessors), so getFirstInsertionPt() is exactly that point. Using
-  // the entry *terminator* here instead (an earlier version of this code
-  // did) is wrong: DemoteRegToStack inserts a value's store immediately
-  // after its definition, and for a value defined earlier in the entry
-  // block than the terminator, that store would end up textually *before*
-  // an alloca placed at the terminator -- an alloca that doesn't dominate
-  // its own store, i.e. invalid IR.
-  Instruction *AllocaInsertPt = &*F.getEntryBlock().getFirstInsertionPt();
+  // Every demotion alloca must dominate all its defs/uses, which for a
+  // function-wide pass means the top of the entry block -- entry has no
+  // predecessors, so getFirstInsertionPt() is exactly that point.
+  BasicBlock::iterator AllocaInsertPt = F.getEntryBlock().getFirstInsertionPt();
   for (Instruction *I : WorkList) {
     if (I->getType()->isVoidTy())
+      continue;
+    // An existing alloca already lives in the entry block and already
+    // dominates every use; it needs no demotion. Wrapping its pointer in
+    // another stack slot would replace direct uses of the alloca with a
+    // loaded copy of the pointer, which breaks anything that requires the
+    // literal alloca (llvm.lifetime.start/end, llvm.dbg.declare).
+    if (isa<AllocaInst>(I))
       continue;
     bool UsedOutsideDefiningBlock = false;
     for (User *U : I->users()) {
@@ -164,8 +131,6 @@ void demoteCrossBlockValues(Function &F) {
       DemoteRegToStack(*I, /*VolatileLoads=*/false, AllocaInsertPt);
   }
 
-  // PHI nodes themselves must also be demoted: DemotePHIToStack replaces a
-  // PHI with loads/stores through a stack slot.
   std::vector<PHINode *> Phis;
   for (BasicBlock &BB : F)
     for (Instruction &I : BB)
@@ -175,35 +140,32 @@ void demoteCrossBlockValues(Function &F) {
     DemotePHIToStack(PN, AllocaInsertPt);
 }
 
-/// Performs the actual flattening transform on an eligible function.
-/// Returns true if the function's IR was modified.
+/// Performs the flattening transform on an eligible function. Returns true
+/// if the function's IR was modified.
 bool flattenFunction(Function &F) {
   LLVMContext &Ctx = F.getContext();
   BasicBlock &Entry = F.getEntryBlock();
 
-  // Step 1: eliminate cross-block SSA values up front so every later step
-  // only has to deal with straight-line, block-local instructions plus
-  // loads/stores through allocas.
+  // Eliminate cross-block SSA values up front so every later step only
+  // has to deal with block-local instructions plus loads/stores through
+  // allocas.
   demoteCrossBlockValues(F);
 
-  // Step 2: collect all blocks except the entry block; the entry block
-  // stays in place and simply jumps into the dispatcher at the end.
+  // The entry block stays in place and jumps into the dispatcher at the
+  // end; every other block gets a state ID and its terminator rewritten.
   std::vector<BasicBlock *> Blocks;
   for (BasicBlock &BB : F)
     if (&BB != &Entry)
       Blocks.push_back(&BB);
 
   if (Blocks.empty())
-    return false; // Nothing to flatten (e.g. entry unconditionally returns).
+    return false;
 
-  // Step 3: assign each collected block a distinct state ID.
   IntegerType *I32 = Type::getInt32Ty(Ctx);
   DenseMap<BasicBlock *, uint32_t> StateOf;
   for (uint32_t I = 0; I < Blocks.size(); ++I)
     StateOf[Blocks[I]] = I;
 
-  // Step 4: create the state variable in the entry block and the dispatcher
-  // block that switches on it.
   IRBuilder<> EntryBuilder(Entry.getTerminator());
   AllocaInst *StateVar =
       EntryBuilder.CreateAlloca(I32, nullptr, "heimdall.state");
@@ -213,8 +175,8 @@ bool flattenFunction(Function &F) {
   LoadInst *StateLoad =
       DispatchBuilder.CreateLoad(I32, StateVar, "heimdall.state.load");
 
-  // Default case: should be unreachable in correct executions, since every
-  // store to StateVar writes a valid case value.
+  // Default case is unreachable: every store to StateVar writes a valid
+  // case value.
   auto *Unreachable = BasicBlock::Create(Ctx, "heimdall.unreachable", &F);
   IRBuilder<>(Unreachable).CreateUnreachable();
 
@@ -223,17 +185,8 @@ bool flattenFunction(Function &F) {
   for (BasicBlock *BB : Blocks)
     Switch->addCase(ConstantInt::get(I32, StateOf[BB]), BB);
 
-  // Step 5: point the entry block's terminator at the dispatcher instead of
-  // its original successor(s), after recording that original target as the
-  // first state to run.
-  // Note: the entry block itself can legally terminate in a `ret` even
-  // though F.size() >= 2 -- e.g. entry returns unconditionally while some
-  // other, unreachable block exists elsewhere in F (dead code left behind
-  // by an earlier pass, or just hand-written IR). That isn't "too small"
-  // by our eligibility check, so don't assume otherwise here: the dyn_cast
-  // chain below already falls through to the conservative bail-out at the
-  // bottom for any terminator kind (ReturnInst included) that isn't a
-  // branch or switch.
+  // Redirect the entry block's terminator into the dispatcher, after
+  // recording its original target(s) as the initial state.
   Instruction *EntryTerm = Entry.getTerminator();
   if (auto *Br = dyn_cast<BranchInst>(EntryTerm)) {
     if (Br->isUnconditional()) {
@@ -249,7 +202,6 @@ bool flattenFunction(Function &F) {
       EntryBuilder.CreateStore(Sel, StateVar);
     }
   } else if (auto *Sw = dyn_cast<SwitchInst>(EntryTerm)) {
-    // Build a chain of selects: default first, then override per case.
     Value *Acc = ConstantInt::get(I32, StateOf[Sw->getDefaultDest()]);
     for (auto Case : Sw->cases()) {
       Value *CaseMatches = EntryBuilder.CreateICmpEQ(
@@ -261,8 +213,6 @@ bool flattenFunction(Function &F) {
     }
     EntryBuilder.CreateStore(Acc, StateVar);
   } else {
-    // Any other terminator on a block with successors (shouldn't occur
-    // given the bail-out checks) — be conservative and refuse to flatten.
     Dispatcher->eraseFromParent();
     Unreachable->eraseFromParent();
     StateVar->eraseFromParent();
@@ -271,16 +221,14 @@ bool flattenFunction(Function &F) {
   EntryTerm->eraseFromParent();
   BranchInst::Create(Dispatcher, &Entry);
 
-  // Step 6: rewrite every collected block's terminator the same way, then
-  // redirect it to the dispatcher.
+  // Rewrite every remaining block's terminator the same way and redirect
+  // it to the dispatcher.
   for (BasicBlock *BB : Blocks) {
     Instruction *Term = BB->getTerminator();
     IRBuilder<> Builder(Term);
 
-    if (auto *Ret = dyn_cast<ReturnInst>(Term)) {
-      // Returns are left alone entirely — they don't feed the dispatcher.
-      (void)Ret;
-      continue;
+    if (isa<ReturnInst>(Term)) {
+      continue; // Returns don't feed the dispatcher.
     }
     if (auto *Br = dyn_cast<BranchInst>(Term)) {
       if (Br->isUnconditional()) {
@@ -307,12 +255,9 @@ bool flattenFunction(Function &F) {
                                     "heimdall.sel");
       }
       Builder.CreateStore(Acc, StateVar);
-    } else if (isa<UnreachableInst>(Term)) {
-      continue; // Nothing to redirect.
     } else {
-      // Conservative: leave any terminator kind we don't explicitly handle
-      // untouched rather than guess. (Bail-out checks should have already
-      // excluded invoke/indirectbr/callbr/exception-handling terminators.)
+      // Unreachable terminators, and any other kind the eligibility check
+      // didn't already exclude: leave untouched rather than guess.
       continue;
     }
 
@@ -328,9 +273,7 @@ bool flattenFunction(Function &F) {
 PreservedAnalyses
 heimdall::ControlFlowFlatteningPass::run(Function &F,
                                           FunctionAnalysisManager &FAM) {
-  LoopInfo &LI = FAM.getResult<LoopAnalysis>(F);
-
-  SkipReason Reason = findBailOutReason(F, LI);
+  SkipReason Reason = findBailOutReason(F);
   if (Reason != SkipReason::None) {
     LLVM_DEBUG(dbgs() << "heimdall-cff: skipping '" << F.getName()
                        << "': " << skipReasonToString(Reason) << "\n");
@@ -342,13 +285,9 @@ heimdall::ControlFlowFlatteningPass::run(Function &F,
   bool Changed = flattenFunction(F);
 
   if (Changed) {
-    if (verifyFunction(F, &errs())) {
-      // Should never happen; flattenFunction is designed to preserve
-      // well-formed IR. Treat as a hard bug rather than shipping broken
-      // output silently.
+    if (verifyFunction(F, &errs()))
       report_fatal_error("heimdall-cff produced invalid IR for function '" +
-                          F.getName() + "' -- this is a bug in the pass");
-    }
+                          F.getName() + "'");
     ++NumFunctionsFlattened;
     return PreservedAnalyses::none();
   }

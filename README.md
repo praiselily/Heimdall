@@ -1,70 +1,68 @@
 # Heimdall
 
-An LLVM obfuscation pass for software IP-protection — control-flow
-flattening, built against LLVM's new Pass Manager — with a first-class
-benchmark measuring how much it degrades **AI-assisted decompilation**
-(LLM-based reconstruction of decompiler pseudocode), not just traditional
-static-analysis metrics.
+An LLVM obfuscation pass for software IP protection, built around control
+flow flattening, with a benchmark that measures how much it degrades
+AI-assisted decompilation instead of just claiming it does.
 
-Heimdall is in the same category as [OLLVM](https://github.com/obfuscator-llvm/obfuscator)
-and [Hikari](https://github.com/HikariObfuscator/Hikari): legitimate
-anti-tampering / anti-reverse-engineering tooling for protecting shipped
-binaries, not an evasion or malware tool. Unlike those projects, it targets
-current stable LLVM (not a years-old fork) and treats AI-assisted
-decompilation — the fastest-growing way real binaries get reverse-engineered
-today — as something to measure and defend against explicitly, rather than
-an afterthought.
+Heimdall sits in the same space as [OLLVM](https://github.com/obfuscator-llvm/obfuscator)
+and [Hikari](https://github.com/HikariObfuscator/Hikari): anti-tampering
+tooling for protecting shipped binaries, not an evasion or malware tool.
+It targets current stable LLVM and the new Pass Manager instead of an old
+fork, and it treats AI-assisted reverse engineering (LLM decompiler
+plugins, pseudocode summarizers) as something worth measuring directly
+rather than assuming traditional obfuscation metrics still apply.
 
 ## What it does
 
-`heimdall-cff` transforms each eligible function's control-flow graph into a
-single dispatcher loop driven by a state variable and a `switch`, so a
-decompiler (and any AI layered on top of it) sees one flat loop instead of
-the function's real branch/loop structure. See [DESIGN.md](DESIGN.md) for
-the full transform description, eligibility/bail-out rules, and correctness
-strategy.
+`heimdall-cff` rewrites an eligible function's control flow into a single
+dispatcher loop driven by a state variable and a switch, so a decompiler
+sees one flat loop instead of the function's real branch and loop
+structure. The full transform, eligibility rules, and correctness strategy
+are in [DESIGN.md](DESIGN.md).
 
-**v1 scope is deliberately narrow: one pass, done well.** See
-[Roadmap](#roadmap) for what's intentionally not built yet.
+v1 scope is one pass, done properly, rather than a partial framework. See
+[Roadmap](#roadmap).
 
 ## Build
 
-Requires a current stable LLVM (built with the new Pass Manager, which has
-been default for years) and CMake 3.20+.
+Requires LLVM (new Pass Manager, which has been the default for years) and
+CMake 3.20+. Built and tested against LLVM 22.
 
 ```bash
 cmake -S . -B build -DLLVM_DIR=/path/to/llvm/lib/cmake/llvm
 cmake --build build
 ```
 
-This produces the `HeimdallCFF` plugin (`build/lib/HeimdallCFF.so` /
-`.dylib` / `.dll`).
+This builds the `HeimdallCFF` plugin (`build/lib/HeimdallCFF.so` / `.dylib`
+/ `.dll`).
 
 ## Usage
 
-```bash
-clang -O1 -fpass-plugin=build/lib/HeimdallCFF.so \
-      -mllvm -passes=heimdall-cff \
-      input.c -o output
+`-fpass-plugin` registers the pass with clang but doesn't splice it into
+clang's default `-O` pipeline on its own, so running it is a two-step
+process: emit optimized IR, run `opt` with the plugin loaded, then hand the
+result back to clang for codegen.
 
-# or via opt directly:
-opt -load-pass-plugin=build/lib/HeimdallCFF.so -passes=heimdall-cff input.ll -S
+```bash
+clang -O1 -S -emit-llvm input.c -o input.ll
+opt -load-pass-plugin=build/lib/HeimdallCFF.so -passes=heimdall-cff input.ll -S -o input.flat.ll
+clang input.flat.ll -o output
 ```
 
-Functions that don't meet the eligibility checks (exception handling,
-indirect control flow, irreducible CFGs, `optnone`) are left untouched
-rather than miscompiled — see `-debug-only=heimdall-cff` for which functions
-were skipped and why.
+Functions that fail the eligibility checks (exception handling, indirect
+control flow, irreducible CFGs, `optnone`) are left alone instead of risking
+a miscompile. Run `opt` with `-debug-only=heimdall-cff` (needs an
+assertions-enabled LLVM build) to see what was skipped and why.
 
 ## Correctness
 
-Every change to the pass must pass `test/correctness`: sample programs
-(a license-key validator, a config-line parser, a small Feistel-cipher
-routine, plus targeted stress cases for entry-block value demotion, nested
-loops/switches, and an irreducible CFG — see
-[DESIGN.md](DESIGN.md#known-limitations--weaknesses) for what each stress
-case regression-tests and why) are compiled both plain and flattened, run
-against the same inputs, and their output is diffed byte-for-byte.
+`test/correctness` compiles each sample program plain and flattened, runs
+both against the same inputs, and diffs the output byte for byte. The
+sample set covers a license-key validator, a config-line parser, a small
+Feistel cipher, and three targeted stress cases (entry-block value
+demotion, nested loops with a switch, and an irreducible CFG). See
+[DESIGN.md](DESIGN.md#known-limitations) for what each stress case is
+checking.
 
 ```bash
 cmake --build build --target test
@@ -76,22 +74,21 @@ python test/correctness/run_correctness.py \
 
 ## AI-resistance benchmark
 
-See [`benchmark/README.md`](benchmark/README.md) for how to run it and
-[DESIGN.md](DESIGN.md#benchmark-harness-ai-resistance) for the methodology.
-In short: for each sample program, both the plain and flattened binary are
-decompiled with Ghidra, an LLM is asked to reconstruct the program's
-behavior and explain its purpose from the pseudocode alone, and the
-reconstruction is scored for behavioral equivalence (does the LLM's
-rewritten code actually behave the same?) and descriptive accuracy (did it
-correctly identify what the program does?).
+For each sample program, the plain and flattened binary are both decompiled
+with Ghidra, an LLM is asked to reconstruct the program's behavior and
+explain its purpose from the pseudocode alone, and the result is scored on
+two axes: whether the rewritten code actually behaves the same (compiled
+and run against the real test inputs), and whether the explanation
+correctly identifies what the program does. See
+[benchmark/README.md](benchmark/README.md) for how to run it and
+[DESIGN.md](DESIGN.md#benchmark-harness) for the methodology.
 
-Results, once generated, live in `benchmark/results/RESULTS.md` with
-concrete before/after examples — not just a summary claim.
+Results live in `benchmark/results/RESULTS.md`, with concrete before/after
+examples rather than a single summary number.
 
 ## Roadmap
 
-Explicitly out of scope for v1, to keep it one well-executed pass instead of
-a half-finished framework:
+Out of scope for v1, on purpose:
 
 - Instruction substitution
 - Bogus control flow / opaque predicates
@@ -101,4 +98,4 @@ a half-finished framework:
 
 ## License
 
-[MIT](LICENSE).
+[MIT](LICENSE)

@@ -3,14 +3,21 @@
 // Registers heimdall::ControlFlowFlatteningPass under the name
 // "heimdall-cff" so it can be invoked as:
 //
-//   opt -load-pass-plugin=libHeimdallCFF.so -passes=heimdall-cff ...
-//   clang -fpass-plugin=libHeimdallCFF.so -mllvm -passes=heimdall-cff ...
+//   opt -load-pass-plugin=libHeimdallCFF.so -passes=heimdall-cff input.ll -S
+//
+// See README.md for the full clang + opt pipeline.
 //
 //===----------------------------------------------------------------===//
 #include "heimdall/ControlFlowFlattening.h"
 
 #include "llvm/Passes/PassBuilder.h"
+
+// PassPlugin.h moved from llvm/Passes/ to llvm/Plugins/ in LLVM 21.
+#if __has_include("llvm/Plugins/PassPlugin.h")
+#include "llvm/Plugins/PassPlugin.h"
+#else
 #include "llvm/Passes/PassPlugin.h"
+#endif
 
 using namespace llvm;
 

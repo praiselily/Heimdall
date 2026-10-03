@@ -10,6 +10,7 @@ if(Python3_Interpreter_FOUND)
       ${Python3_EXECUTABLE}
       ${CMAKE_CURRENT_SOURCE_DIR}/run_correctness.py
       --clang ${LLVM_TOOLS_BINARY_DIR}/clang
+      --opt ${LLVM_TOOLS_BINARY_DIR}/opt
       --plugin $<TARGET_FILE:HeimdallCFF>
       --programs-dir ${CMAKE_CURRENT_SOURCE_DIR}/programs
       --work-dir ${CMAKE_CURRENT_BINARY_DIR}/correctness-work

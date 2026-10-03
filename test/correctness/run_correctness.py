@@ -38,8 +38,7 @@ TEST_CASES = {
         ["ffffffff"],
         ["12345678"],
     ],
-    # Regression test for a bug found in code review: see
-    # entry_value_stress.c for why entry-block-defined, cross-block-used
+    # See entry_value_stress.c for why entry-block-defined, cross-block-used
     # values need special care during demotion.
     "entry_value_stress": [
         ["10", "20", "5"],
@@ -55,10 +54,8 @@ TEST_CASES = {
         ["1", "1", "3"],
         ["0", "10", "2"],
     ],
-    # Irreducible CFG (see irreducible_dispatch.c) -- the pass is expected
-    # to SKIP this function entirely, so plain == flattened output is the
-    # whole point of this case: it confirms the bail-out path is safe, not
-    # that flattening happened.
+    # Irreducible CFG (see irreducible_dispatch.c). heimdall-cff flattens
+    # it the same as any other loop; this case checks that holds.
     "irreducible_dispatch": [
         ["50"],
         ["0"],
@@ -68,15 +65,35 @@ TEST_CASES = {
 }
 
 
-def compile_variant(clang, plugin, src, out, flatten):
-    cmd = [clang, "-O1", str(src), "-o", str(out)]
-    if flatten:
-        cmd += [
-            f"-fpass-plugin={plugin}",
-            "-mllvm",
+def compile_variant(clang, opt, plugin, src, out, flatten):
+    if not flatten:
+        subprocess.run([clang, "-O1", str(src), "-o", str(out)], check=True)
+        return
+
+    # clang's -fpass-plugin loads a plugin's callbacks but doesn't splice an
+    # arbitrary registered pass name into its default -O pipeline, so the
+    # pass is run via opt on the emitted IR instead: emit -O1 IR (the shape
+    # a real optimized build would flatten), run heimdall-cff over it, then
+    # hand the result back to clang for codegen.
+    ll_path = out.with_suffix(".ll")
+    flat_ll_path = out.with_suffix(".flat.ll")
+    subprocess.run(
+        [clang, "-O1", "-S", "-emit-llvm", str(src), "-o", str(ll_path)],
+        check=True,
+    )
+    subprocess.run(
+        [
+            opt,
+            f"-load-pass-plugin={plugin}",
             "-passes=heimdall-cff",
-        ]
-    subprocess.run(cmd, check=True)
+            str(ll_path),
+            "-S",
+            "-o",
+            str(flat_ll_path),
+        ],
+        check=True,
+    )
+    subprocess.run([clang, str(flat_ll_path), "-o", str(out)], check=True)
 
 
 def run(binary, args):
@@ -89,6 +106,7 @@ def run(binary, args):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--clang", required=True)
+    ap.add_argument("--opt", default="opt")
     ap.add_argument("--plugin", required=True)
     ap.add_argument("--programs-dir", required=True, type=pathlib.Path)
     ap.add_argument("--work-dir", required=True, type=pathlib.Path)
@@ -103,8 +121,8 @@ def main():
         flat_bin = args.work_dir / f"{name}.flat"
 
         print(f"== {name} ==")
-        compile_variant(args.clang, args.plugin, src, plain_bin, flatten=False)
-        compile_variant(args.clang, args.plugin, src, flat_bin, flatten=True)
+        compile_variant(args.clang, args.opt, args.plugin, src, plain_bin, flatten=False)
+        compile_variant(args.clang, args.opt, args.plugin, src, flat_bin, flatten=True)
 
         for case_args in cases:
             plain_result = run(plain_bin, case_args)

@@ -1,15 +1,13 @@
-/* Stress test for the pass's irreducible-CFG bail-out (see DESIGN.md
- * "Eligibility / bail-out conditions" and ControlFlowFlattening.cpp's
- * findBailOutReason). Built with `goto` so two different blocks jump into
- * the *same* two-block cycle from outside it -- a textbook irreducible CFG
- * (no single block dominates the whole cycle, so it has no natural loop
- * header LLVM's LoopInfo can agree on).
+/* Stress test for an irreducible CFG. Built with `goto` so two different
+ * blocks jump into the *same* two-block cycle from outside it -- a
+ * textbook irreducible CFG (no single block dominates the whole cycle, so
+ * it has no natural loop header LLVM's LoopInfo can agree on).
  *
- * heimdall-cff is expected to detect this and SKIP the function entirely
- * (visible via -debug-only=heimdall-cff), leaving it byte-for-byte
- * unchanged. This test's job is to confirm that "skip" path is actually
- * taken safely -- i.e. the pass doesn't crash and doesn't miscompile a
- * shape it isn't designed to transform -- not to test flattening itself.
+ * heimdall-cff does not special-case loop structure at all: it rewrites
+ * each block's terminator independently, so an irreducible cycle flattens
+ * the same way a normal loop does. This test exists to confirm that in
+ * practice, since it's an easy case to get wrong by assumption rather than
+ * by inspection.
  */
 #include <stdio.h>
 #include <stdlib.h>

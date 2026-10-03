@@ -83,8 +83,15 @@ correctly identifies what the program does. See
 [benchmark/README.md](benchmark/README.md) for how to run it and
 [DESIGN.md](DESIGN.md#benchmark-harness) for the methodology.
 
-Results live in `benchmark/results/RESULTS.md`, with concrete before/after
-examples rather than a single summary number.
+Results: [`benchmark/results/RESULTS.md`](benchmark/results/RESULTS.md).
+Headline finding so far: Ghidra's decompiler doesn't just struggle with a
+flattened function, it fails outright (its jump-table recovery can't
+bound the dispatcher's indirect jump without an explicit range check,
+which LLVM omits since the switch's default case is unreachable by
+construction) -- producing no usable pseudocode for an LLM to work from at
+all. The writeup also covers the important caveat that goes with that
+result: it's specific to the decompiler's generated C, not a claim that
+the binary becomes unanalyzable by other means.
 
 ## Roadmap
 

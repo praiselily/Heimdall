@@ -1,0 +1,80 @@
+{
+  "run_date": "2026-10-04",
+  "ghidra_version": "12.1.4",
+  "llvm_version": "22.1.8",
+  "note": "Reconstruction/judging done directly by the author's model reading Ghidra pseudocode (no ANTHROPIC_API_KEY configured in this environment), not via harness.py's automated API path. See RESULTS.md for full methodology and caveats.",
+  "programs": {
+    "license_check": {
+      "ground_truth": "Validates a license key of the form XXXX-XXXX-XXCC (14 chars): checks length and dash positions, sums the digit characters in the first two groups mod 97, and requires the last two digits (CC) to equal that checksum.",
+      "plain": {
+        "ghidra_decompile": "clean, readable C",
+        "reconstruction_recovered_algorithm": true,
+        "behavioral_match": "3/3",
+        "test_cases": {
+          "1234-5678-0036": "match",
+          "1234-5678-0000": "match",
+          "not-a-key": "match"
+        }
+      },
+      "flattened": {
+        "ghidra_decompile": "failed: 'Could not recover jumptable at 0x...: Too many branches'",
+        "reconstruction_recovered_algorithm": false,
+        "behavioral_match": "2/3 (coincidental -- reconstruction always rejects; matches only on inputs whose correct answer is also reject)",
+        "test_cases": {
+          "1234-5678-0036": "miss (ground VALID, recon INVALID)",
+          "1234-5678-0000": "match (coincidental)",
+          "not-a-key": "match (coincidental)"
+        }
+      }
+    },
+    "simple_parser": {
+      "ground_truth": "Parses a string of semicolon-separated key=value pairs into a list, rejecting malformed entries (missing '=', empty/too-long key or value, too many pairs), and prints each pair plus a count, or PARSE_ERROR.",
+      "plain": {
+        "ghidra_decompile": "clean, readable C",
+        "reconstruction_recovered_algorithm": true,
+        "behavioral_match": "3/3",
+        "test_cases": {
+          "a=1;b=2;c=3": "match",
+          "malformed": "match",
+          "": "match (usage message; path-only textual diff, not behavioral)"
+        }
+      },
+      "flattened": {
+        "ghidra_decompile": "failed: 'Could not recover jumptable: Too many branches'",
+        "reconstruction_recovered_algorithm": false,
+        "behavioral_match": "1/3 (coincidental -- reconstruction always reports PARSE_ERROR)",
+        "test_cases": {
+          "a=1;b=2;c=3": "miss (ground prints 3 records, recon says PARSE_ERROR)",
+          "malformed": "match (coincidental)",
+          "": "match (usage message only)"
+        }
+      }
+    },
+    "tiny_crypto": {
+      "ground_truth": "A 6-round Feistel block cipher operating on a 32-bit block with a branchy non-linear round function (rotate/complement chosen by low bits, plus a fixed additive constant); encrypts then decrypts the input and reports whether the roundtrip recovers the original plaintext.",
+      "plain": {
+        "ghidra_decompile": "clean, readable C (round function and loops inlined into main, but fully legible)",
+        "reconstruction_recovered_algorithm": true,
+        "behavioral_match": "3/3",
+        "note": "subkey constants read directly from the binary's .rdata section, not visible in the decompiled C text itself",
+        "test_cases": {
+          "00000000": "match",
+          "deadbeef": "match",
+          "12345678": "match"
+        }
+      },
+      "flattened": {
+        "ghidra_decompile": "failed: 'Could not recover jumptable: Too many branches'",
+        "reconstruction_recovered_algorithm": false,
+        "behavioral_match": "0/3",
+        "test_cases": {
+          "00000000": "miss",
+          "deadbeef": "miss",
+          "12345678": "miss"
+        }
+      }
+    }
+  },
+  "key_finding": "Ghidra's decompiler fails outright (not just 'harder to read') on heimdall-cff-flattened functions, because the dispatcher's switch has no explicit bounds check for Ghidra's jump-table analyzer to key off (LLVM omits it since the switch's default case is unreachable by construction). Zero genuine algorithm recovery occurred for any flattened function; the handful of 'matching' test cases are coincidental matches from a reconstruction that defaults to rejecting/erroring.",
+  "caveat": "Raw disassembly (not the decompiler's C output) still shows every flattened block jumping to one shared dispatcher address -- a human analyst or a tool reading disassembly directly, rather than a single pseudocode dump, could plausibly still identify the CFF pattern. This run measures resistance to an AI reading Ghidra's default decompiled C output specifically, not resistance to all possible analysis."
+}

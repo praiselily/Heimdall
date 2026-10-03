@@ -46,6 +46,7 @@ PROGRAMS = {
             ["1234-5678-0000"],
             ["not-a-key"],
         ],
+        "relevant_functions": ["validate_license_key", "main"],
     },
     "simple_parser": {
         "ground_truth": (
@@ -59,6 +60,7 @@ PROGRAMS = {
             ["malformed"],
             [""],
         ],
+        "relevant_functions": ["parse_config", "main"],
     },
     "tiny_crypto": {
         "ground_truth": (
@@ -72,6 +74,15 @@ PROGRAMS = {
             ["00000000"],
             ["deadbeef"],
             ["12345678"],
+        ],
+        # round_function/feistel_encrypt/feistel_decrypt get fully inlined
+        # into main by -O1 in practice; kept in the list in case a future
+        # compiler/flag combination leaves them standing on their own.
+        "relevant_functions": [
+            "round_function",
+            "feistel_encrypt",
+            "feistel_decrypt",
+            "main",
         ],
     },
 }
@@ -117,9 +128,20 @@ def run_one(name, cfg, clang, opt, plugin, ghidra_dir, programs_dir, work_dir, c
     client = anthropic.Anthropic()
     report = {"program": name, "ground_truth": cfg["ground_truth"], "variants": {}}
 
+    relevant = set(cfg.get("relevant_functions", []))
+
     for variant, binary in (("plain", plain_bin), ("flattened", flat_bin)):
         print(f"  [{name}/{variant}] decompiling with Ghidra...")
         decompiled = decompile_binary(binary, ghidra_dir)
+
+        # These binaries statically link the CRT, so a decompile returns
+        # ~25+ functions, almost all of them CRT startup code identical in
+        # both variants (heimdall-cff only ever sees this file's own IR).
+        # Keep only what's actually relevant so the reconstruction task
+        # isn't diluted by -- or scored against -- boilerplate neither
+        # variant touches.
+        if relevant:
+            decompiled = {k: v for k, v in decompiled.items() if k in relevant}
 
         print(f"  [{name}/{variant}] asking {model} to reconstruct...")
         explanation, code = reconstruct_program(client, model, decompiled)

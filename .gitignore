@@ -10,8 +10,6 @@ build/
 __pycache__/
 *.pyc
 .venv/
-/benchmark/results/results.json
-/benchmark/results/RESULTS.md
 .cache/
 .DS_Store
 heimdall.md

@@ -1,24 +1,23 @@
 # Heimdall
 
-An LLVM control-flow flattening pass for software IP protection, with a
-benchmark measuring how much it actually degrades AI-assisted
-decompilation rather than just claiming it does.
+An LLVM control-flow flattening pass for software IP protection. Includes
+a benchmark measuring how much it degrades AI-assisted decompilation.
 
 Same space as [OLLVM](https://github.com/obfuscator-llvm/obfuscator) and
-[Hikari](https://github.com/HikariObfuscator/Hikari): anti-tampering
-tooling for shipped binaries, not an evasion tool. Targets current stable
-LLVM and the new Pass Manager instead of an old fork, and treats
-AI-assisted reverse engineering as something to measure directly.
+[Hikari](https://github.com/HikariObfuscator/Hikari): legitimate
+anti-tampering tooling for shipped binaries. Targets current stable LLVM
+and the new Pass Manager. Treats AI-assisted reverse engineering as
+something worth measuring directly.
 
 ## What it does
 
 `heimdall-cff` rewrites an eligible function's control flow into a single
 dispatcher loop driven by a state variable and a switch. A decompiler sees
-one flat loop instead of the function's real branches and loops. Full
-transform and eligibility rules in [DESIGN.md](DESIGN.md).
+one flat loop where the function's real branches and loops used to be.
+Full transform and eligibility rules in [DESIGN.md](DESIGN.md).
 
-v1 is one pass, done properly, instead of a half-built framework. See
-[Roadmap](#roadmap).
+v1 ships one pass, built properly. See [Roadmap](#roadmap) for what's
+deferred.
 
 ## Build
 
@@ -36,7 +35,7 @@ Produces the `HeimdallCFF` plugin (`build/lib/HeimdallCFF.so` / `.dylib` /
 ## Usage
 
 `-fpass-plugin` registers the pass with clang but won't splice it into the
-default `-O` pipeline by itself. Running it is a two-step process: emit
+default `-O` pipeline by itself. Running it takes two steps: emit
 optimized IR, run `opt` with the plugin loaded, hand the result back to
 clang for codegen.
 
@@ -47,8 +46,8 @@ clang input.flat.ll -o output
 ```
 
 Functions that fail the eligibility checks (exception handling, indirect
-control flow, `optnone`) are left alone rather than risking a miscompile.
-`-debug-only=heimdall-cff` (assertions build) shows what got skipped.
+control flow, `optnone`) are left alone. `-debug-only=heimdall-cff`
+(assertions build) shows what got skipped and why.
 
 ## Correctness
 
@@ -56,8 +55,8 @@ control flow, `optnone`) are left alone rather than risking a miscompile.
 both against the same inputs, and diffs the output byte for byte. Sample
 set: a license-key validator, a config-line parser, a small Feistel
 cipher, and a few targeted stress cases (entry-block value demotion,
-nested loops with a switch, an irreducible CFG). See
-[DESIGN.md](DESIGN.md#known-limitations) for what each one checks.
+nested loops with a switch, an irreducible CFG). What each checks is in
+[DESIGN.md](DESIGN.md#known-limitations).
 
 ```bash
 cmake --build build --target test
@@ -69,24 +68,22 @@ python test/correctness/run_correctness.py \
 
 ## AI-resistance benchmark
 
-For each sample program, both binaries get decompiled with Ghidra, an LLM
-reconstructs the program's behavior and purpose from the pseudocode, and
-the result is scored on whether the rewrite actually behaves the same and
-whether the explanation is right. See
-[benchmark/README.md](benchmark/README.md) for how to run it and
-[DESIGN.md](DESIGN.md#benchmark-harness) for the methodology.
+For each sample program, both binaries get decompiled with Ghidra. An LLM
+reconstructs the program's behavior and purpose from the pseudocode. The
+result is scored on whether the rewrite behaves the same and whether the
+explanation is right. How to run it: [benchmark/README.md](benchmark/README.md).
+Methodology: [DESIGN.md](DESIGN.md#benchmark-harness).
 
 Results so far: [`benchmark/results/RESULTS.md`](benchmark/results/RESULTS.md).
-Ghidra's decompiler doesn't just struggle with a flattened function, it
-fails outright. Its jump-table recovery can't bound the dispatcher's
-indirect jump without a range check, and LLVM omits that check since the
-switch's default case is unreachable by construction. That leaves no
-usable pseudocode for a model to reconstruct anything from. The writeup
-covers the caveat that goes with it too.
+Ghidra's decompiler fails outright on a flattened function. Its jump-table
+recovery needs a range check to bound the dispatcher's indirect jump, and
+LLVM omits that check since the switch's default case is unreachable by
+construction. No usable pseudocode comes out the other end for a model to
+work from. The writeup covers the caveat that goes with this.
 
 ## Roadmap
 
-Out of scope for v1, on purpose:
+Deferred past v1:
 
 - Instruction substitution
 - Bogus control flow / opaque predicates

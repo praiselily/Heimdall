@@ -5,12 +5,11 @@ a function's behavior and purpose from decompiler pseudocode, compared to
 the same program built without obfuscation.
 
 Results from the first run: [`results/RESULTS.md`](results/RESULTS.md).
-Ghidra's decompiler fails outright on flattened functions rather than just
-producing harder-to-read code. Its jump-table analyzer can't bound the
-dispatcher's indirect jump without a range check, and LLVM omits that
-check since the switch's default is unreachable by construction. There's
-nothing left in the pseudocode to reconstruct from. See the writeup for
-the caveat that comes with that result.
+Ghidra's decompiler fails outright on flattened functions. Its jump-table
+analyzer can't bound the dispatcher's indirect jump without a range
+check, and LLVM omits that check since the switch's default is
+unreachable by construction. Nothing is left in the pseudocode to
+reconstruct from. The writeup covers the caveat that comes with that.
 
 ## Pipeline
 

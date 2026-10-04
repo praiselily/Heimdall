@@ -142,11 +142,10 @@ bool flattenFunction(Function &F) {
   if (Blocks.empty())
     return false;
 
-  // Shuffle the state IDs rather than handing them out in block order.
-  // Block order here is still close to source order, so a sequential
-  // assignment would let the constants themselves leak the original
-  // layout even with the real edges gone. Seeded on the function name so
-  // the mapping is stable across rebuilds.
+  // Shuffle the state IDs. Block order here is still close to source
+  // order, so handing them out sequentially would let the constants
+  // leak the original layout even with the real edges gone. Seeded on
+  // the function name so the mapping is stable across rebuilds.
   IntegerType *I32 = Type::getInt32Ty(Ctx);
   std::vector<uint32_t> StateIds(Blocks.size());
   std::iota(StateIds.begin(), StateIds.end(), 0);

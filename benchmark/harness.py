@@ -28,11 +28,8 @@ from ghidra_runner import decompile_binary
 from reconstruct import judge_explanation, reconstruct_program
 from score import behavioral_score
 
-# One-line ground truth for the "descriptive" score, and the CLI test cases
-# used for the "behavioral" score. Kept in sync by hand with
-# test/correctness/run_correctness.py's TEST_CASES -- see that file for the
-# authoritative correctness-test inputs; this is a representative subset
-# plus a human description an LLM judge checks explanations against.
+# Ground truth for the descriptive score, plus the CLI test cases used for
+# the behavioral score (subset of run_correctness.py's TEST_CASES).
 PROGRAMS = {
     "license_check": {
         "ground_truth": (
@@ -93,10 +90,8 @@ def compile_variant(clang, opt, plugin, src, out, flatten):
         subprocess.run([clang, "-O1", str(src), "-o", str(out)], check=True)
         return
 
-    # clang's -fpass-plugin registers a plugin's callbacks but doesn't splice
-    # an arbitrary registered pass name into its default -O pipeline, so the
-    # pass runs via opt on the emitted IR: emit -O1 IR, run heimdall-cff over
-    # it, then hand the result back to clang for codegen.
+    # -fpass-plugin registers the plugin but won't splice it into clang's
+    # own -O pipeline, so run it via opt on the emitted IR instead.
     ll_path = out.with_suffix(".ll")
     flat_ll_path = out.with_suffix(".flat.ll")
     subprocess.run(
@@ -134,12 +129,8 @@ def run_one(name, cfg, clang, opt, plugin, ghidra_dir, programs_dir, work_dir, c
         print(f"  [{name}/{variant}] decompiling with Ghidra...")
         decompiled = decompile_binary(binary, ghidra_dir)
 
-        # These binaries statically link the CRT, so a decompile returns
-        # ~25+ functions, almost all of them CRT startup code identical in
-        # both variants (heimdall-cff only ever sees this file's own IR).
-        # Keep only what's actually relevant so the reconstruction task
-        # isn't diluted by -- or scored against -- boilerplate neither
-        # variant touches.
+        # Statically-linked CRT startup code shows up in every decompile
+        # and is identical in both variants; filter it out.
         if relevant:
             decompiled = {k: v for k, v in decompiled.items() if k in relevant}
 

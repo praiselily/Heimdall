@@ -2,7 +2,7 @@
   "run_date": "2026-10-04",
   "ghidra_version": "12.1.4",
   "llvm_version": "22.1.8",
-  "note": "Reconstruction/judging done directly by the author's model reading Ghidra pseudocode (no ANTHROPIC_API_KEY configured in this environment), not via harness.py's automated API path. See RESULTS.md for full methodology and caveats.",
+  "note": "Reconstruction/judging done manually, reading only the Ghidra pseudocode, not via harness.py's automated API path (no ANTHROPIC_API_KEY configured for this run). See RESULTS.md for full methodology.",
   "programs": {
     "license_check": {
       "ground_truth": "Validates a license key of the form XXXX-XXXX-XXCC (14 chars): checks length and dash positions, sums the digit characters in the first two groups mod 97, and requires the last two digits (CC) to equal that checksum.",
@@ -75,6 +75,6 @@
       }
     }
   },
-  "key_finding": "Ghidra's decompiler fails outright (not just 'harder to read') on heimdall-cff-flattened functions, because the dispatcher's switch has no explicit bounds check for Ghidra's jump-table analyzer to key off (LLVM omits it since the switch's default case is unreachable by construction). Zero genuine algorithm recovery occurred for any flattened function; the handful of 'matching' test cases are coincidental matches from a reconstruction that defaults to rejecting/erroring.",
-  "caveat": "Raw disassembly (not the decompiler's C output) still shows every flattened block jumping to one shared dispatcher address -- a human analyst or a tool reading disassembly directly, rather than a single pseudocode dump, could plausibly still identify the CFF pattern. This run measures resistance to an AI reading Ghidra's default decompiled C output specifically, not resistance to all possible analysis."
+  "key_finding": "Ghidra's decompiler fails outright on heimdall-cff-flattened functions. The dispatcher's switch has no explicit bounds check for Ghidra's jump-table analyzer to key off, since LLVM omits it when the switch's default case is unreachable by construction. Zero genuine algorithm recovery occurred for any flattened function; the handful of matching test cases are coincidental, from a reconstruction that defaults to rejecting/erroring.",
+  "caveat": "Raw disassembly still shows every flattened block jumping to one shared dispatcher address. A human analyst or a tool reading disassembly directly, rather than one pseudocode dump, could plausibly still identify the CFF pattern. This run measures resistance to an AI reading Ghidra's default decompiled C output specifically, not resistance to all possible analysis."
 }

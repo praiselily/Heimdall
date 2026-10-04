@@ -1,16 +1,12 @@
-"""Thin wrapper around Ghidra's `analyzeHeadless` that decompiles a single
-binary to {function_name: pseudocode} JSON using
+"""Thin wrapper around Ghidra's `analyzeHeadless` that decompiles a binary
+to {function_name: pseudocode} JSON using
 ghidra_scripts/DecompileFunctions.java.
 
-A .java postScript is used rather than a .py one because Ghidra 11.3+
-requires PyGhidra to be installed and active to run .py scripts at all; a
-plain Jython-style script fails headless analysis outright without it. A
-GhidraScript written in Java needs no extra setup and works unconditionally,
-confirmed directly against Ghidra 12.1.4.
+Java rather than Python: Ghidra 11.3+ needs PyGhidra installed to run a
+.py postScript at all. Plain Java needs no extra setup.
 
-Requires the GHIDRA_INSTALL_DIR environment variable (or --ghidra-dir) to
-point at a Ghidra install, i.e. the directory containing
-support/analyzeHeadless.
+Requires GHIDRA_INSTALL_DIR (or --ghidra-dir) pointing at a Ghidra
+install, i.e. the directory containing support/analyzeHeadless.
 """
 import json
 import os

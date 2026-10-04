@@ -1,15 +1,9 @@
-"""Feeds a binary's full decompiled pseudocode (all functions) to an LLM and
-asks it to (a) explain what the program as a whole does and (b) rewrite it
-as a single clean, compilable, behaviorally equivalent C program.
+"""Feeds a binary's decompiled pseudocode to an LLM and asks it to explain
+the program and rewrite it as a single compilable C program -- whole
+program rather than function-at-a-time, so the result can be compiled and
+run against the same CLI inputs as the ground truth binary (see score.py).
 
-Whole-program reconstruction (rather than function-at-a-time) is used so the
-result can be compiled and run against the same CLI inputs as the ground
-truth binary for the "behavioral" score (see score.py). The "descriptive"
-score separately checks whether the explanation names the program's actual
-purpose.
-
-Uses the Anthropic API by default (ANTHROPIC_API_KEY env var). The model is
-configurable via --model so the harness can later compare different models.
+Uses the Anthropic API (ANTHROPIC_API_KEY). Model is configurable.
 """
 import json
 import re

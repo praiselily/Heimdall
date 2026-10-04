@@ -7,10 +7,8 @@
 //       -postScript DecompileFunctions.java <output.json> \
 //       -scriptPath benchmark/ghidra_scripts -deleteProject
 //
-// A plain .java GhidraScript needs no extra runtime setup (unlike a .py
-// script, which as of Ghidra 11.3+ requires PyGhidra to be installed and
-// active -- a Jython-style postScript fails headless analysis outright
-// otherwise). See benchmark/README.md.
+// Java, not Python: Ghidra 11.3+ needs PyGhidra installed to run a .py
+// postScript at all. See benchmark/README.md.
 import ghidra.app.decompiler.DecompInterface;
 import ghidra.app.decompiler.DecompileResults;
 import ghidra.app.script.GhidraScript;

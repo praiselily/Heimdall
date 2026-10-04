@@ -2,8 +2,6 @@
 //
 // Heimdall: software IP-protection obfuscation for LLVM.
 //
-// See DESIGN.md for the transform description and rationale.
-//
 //===----------------------------------------------------------------===//
 #include "heimdall/ControlFlowFlattening.h"
 
@@ -31,8 +29,6 @@ STATISTIC(NumFunctionsSkipped, "Number of functions skipped (ineligible)");
 
 namespace {
 
-/// Reason a function was rejected for flattening, surfaced via
-/// -debug-only=heimdall-cff.
 enum class SkipReason {
   None,
   TooSmall,
@@ -64,8 +60,6 @@ StringRef skipReasonToString(SkipReason R) {
   llvm_unreachable("unhandled SkipReason");
 }
 
-/// Returns the first reason F is ineligible for flattening, or
-/// SkipReason::None if it can be transformed.
 SkipReason findBailOutReason(Function &F) {
   if (F.isDeclaration())
     return SkipReason::Declaration;
@@ -74,11 +68,8 @@ SkipReason findBailOutReason(Function &F) {
   if (F.size() < 2)
     return SkipReason::TooSmall;
 
-  // flattenFunction only knows how to redirect a br/switch terminator into
-  // the dispatcher. An entry block can legally end in something else (a
-  // direct ret, with other unreachable blocks elsewhere in F keeping
-  // F.size() >= 2) -- checked here, before demoteCrossBlockValues runs, so
-  // a rejected function is never left partially transformed.
+  // Entry can end in a plain ret even when F has >= 2 blocks (dead code
+  // elsewhere keeps the count up). Catch that here, before any mutation.
   Instruction *EntryTerm = F.getEntryBlock().getTerminator();
   if (!isa<BranchInst>(EntryTerm) && !isa<SwitchInst>(EntryTerm))
     return SkipReason::UnsupportedEntryTerminator;
@@ -98,28 +89,22 @@ SkipReason findBailOutReason(Function &F) {
   return SkipReason::None;
 }
 
-/// Demotes every value defined in one block and used in another (including
-/// PHI nodes and the values feeding them) to a stack slot, via LLVM's own
-/// DemoteRegToStack/DemotePHIToStack, so flattening can freely redirect
-/// control flow without violating SSA dominance.
+// Demotes every value defined in one block and used in another to a stack
+// slot via DemoteRegToStack/DemotePHIToStack, so the CFG rewrite below
+// doesn't have to preserve SSA dominance across the new edges.
 void demoteCrossBlockValues(Function &F) {
   std::vector<Instruction *> WorkList;
   for (BasicBlock &BB : F)
     for (Instruction &I : BB)
       WorkList.push_back(&I);
 
-  // Every demotion alloca must dominate all its defs/uses, which for a
-  // function-wide pass means the top of the entry block -- entry has no
-  // predecessors, so getFirstInsertionPt() is exactly that point.
   BasicBlock::iterator AllocaInsertPt = F.getEntryBlock().getFirstInsertionPt();
   for (Instruction *I : WorkList) {
     if (I->getType()->isVoidTy())
       continue;
-    // An existing alloca already lives in the entry block and already
-    // dominates every use; it needs no demotion. Wrapping its pointer in
-    // another stack slot would replace direct uses of the alloca with a
-    // loaded copy of the pointer, which breaks anything that requires the
-    // literal alloca (llvm.lifetime.start/end, llvm.dbg.declare).
+    // Existing allocas already dominate everything and don't need this;
+    // demoting one would replace its direct uses with a loaded copy of the
+    // pointer, which breaks llvm.lifetime.start/end and dbg.declare.
     if (isa<AllocaInst>(I))
       continue;
     bool UsedOutsideDefiningBlock = false;
@@ -143,19 +128,12 @@ void demoteCrossBlockValues(Function &F) {
     DemotePHIToStack(PN, AllocaInsertPt);
 }
 
-/// Performs the flattening transform on an eligible function. Returns true
-/// if the function's IR was modified.
 bool flattenFunction(Function &F) {
   LLVMContext &Ctx = F.getContext();
   BasicBlock &Entry = F.getEntryBlock();
 
-  // Eliminate cross-block SSA values up front so every later step only
-  // has to deal with block-local instructions plus loads/stores through
-  // allocas.
   demoteCrossBlockValues(F);
 
-  // The entry block stays in place and jumps into the dispatcher at the
-  // end; every other block gets a state ID and its terminator rewritten.
   std::vector<BasicBlock *> Blocks;
   for (BasicBlock &BB : F)
     if (&BB != &Entry)
@@ -164,15 +142,11 @@ bool flattenFunction(Function &F) {
   if (Blocks.empty())
     return false;
 
-  // State IDs are a shuffled permutation of [0, Blocks.size()), not a plain
-  // 0..N-1 walk in the function's original block order. Block order at this
-  // point is still essentially source order, so a sequential assignment
-  // would leave the state constant stored by each block as a de facto
-  // position index: an analyst wouldn't see the original edges, but could
-  // still read off "lower state values come earlier in the function" from
-  // the constants alone, recovering much of the layout the flattening is
-  // meant to hide. The permutation is seeded from the function's name so
-  // builds stay reproducible.
+  // Shuffle the state IDs rather than handing them out in block order.
+  // Block order here is still close to source order, so a sequential
+  // assignment would let the constants themselves leak the original
+  // layout even with the real edges gone. Seeded on the function name so
+  // the mapping is stable across rebuilds.
   IntegerType *I32 = Type::getInt32Ty(Ctx);
   std::vector<uint32_t> StateIds(Blocks.size());
   std::iota(StateIds.begin(), StateIds.end(), 0);
@@ -185,11 +159,8 @@ bool flattenFunction(Function &F) {
   for (uint32_t I = 0; I < Blocks.size(); ++I)
     StateOf[Blocks[I]] = StateIds[I];
 
-  // Deliberately unnamed: these values have no business looking any
-  // different from the rest of the function's ordinary compiler-generated
-  // temporaries. A descriptive name here would be a free signature for
-  // anyone grepping IR, bitcode, or an LTO object's embedded bitcode
-  // section for this specific pass.
+  // No names on any of this -- it should look like every other anonymous
+  // compiler temporary, not carry a signature into IR or bitcode output.
   IRBuilder<> EntryBuilder(Entry.getTerminator());
   AllocaInst *StateVar = EntryBuilder.CreateAlloca(I32);
 
@@ -197,8 +168,6 @@ bool flattenFunction(Function &F) {
   IRBuilder<> DispatchBuilder(Dispatcher);
   LoadInst *StateLoad = DispatchBuilder.CreateLoad(I32, StateVar);
 
-  // Default case is unreachable: every store to StateVar writes a valid
-  // case value.
   auto *Unreachable = BasicBlock::Create(Ctx, "", &F);
   IRBuilder<>(Unreachable).CreateUnreachable();
 
@@ -207,8 +176,6 @@ bool flattenFunction(Function &F) {
   for (BasicBlock *BB : Blocks)
     Switch->addCase(ConstantInt::get(I32, StateOf[BB]), BB);
 
-  // Redirect the entry block's terminator into the dispatcher, after
-  // recording its original target(s) as the initial state.
   Instruction *EntryTerm = Entry.getTerminator();
   if (auto *Br = dyn_cast<BranchInst>(EntryTerm)) {
     if (Br->isUnconditional()) {
@@ -241,15 +208,13 @@ bool flattenFunction(Function &F) {
   EntryTerm->eraseFromParent();
   BranchInst::Create(Dispatcher, &Entry);
 
-  // Rewrite every remaining block's terminator the same way and redirect
-  // it to the dispatcher.
   for (BasicBlock *BB : Blocks) {
     Instruction *Term = BB->getTerminator();
     IRBuilder<> Builder(Term);
 
-    if (isa<ReturnInst>(Term)) {
-      continue; // Returns don't feed the dispatcher.
-    }
+    if (isa<ReturnInst>(Term))
+      continue;
+
     if (auto *Br = dyn_cast<BranchInst>(Term)) {
       if (Br->isUnconditional()) {
         BasicBlock *Target = Br->getSuccessor(0);
@@ -274,8 +239,6 @@ bool flattenFunction(Function &F) {
       }
       Builder.CreateStore(Acc, StateVar);
     } else {
-      // Unreachable terminators, and any other kind the eligibility check
-      // didn't already exclude: leave untouched rather than guess.
       continue;
     }
 

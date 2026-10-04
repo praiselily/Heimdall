@@ -1,17 +1,16 @@
 # AI-resistance benchmark
 
-Measures how much `heimdall-cff` degrades **AI-assisted decompilation** --
-an LLM's ability to reconstruct a function's real behavior and purpose from
-decompiler pseudocode alone -- compared to the same program compiled without
-obfuscation.
+Measures how much `heimdall-cff` degrades an LLM's ability to reconstruct
+a function's behavior and purpose from decompiler pseudocode, compared to
+the same program built without obfuscation.
 
-Results from the first real run: [`results/RESULTS.md`](results/RESULTS.md).
-Headline finding: Ghidra's decompiler doesn't just make flattened functions
-harder to read, it fails outright (its jump-table analyzer can't bound the
-dispatcher's indirect jump without an explicit range check, which LLVM
-omits since the switch's default case is unreachable by construction), so
-there's nothing left in the pseudocode for an LLM to reconstruct from. Read
-the full writeup for the important caveat that goes with that result.
+Results from the first run: [`results/RESULTS.md`](results/RESULTS.md).
+Ghidra's decompiler fails outright on flattened functions rather than just
+producing harder-to-read code. Its jump-table analyzer can't bound the
+dispatcher's indirect jump without a range check, and LLVM omits that
+check since the switch's default is unreachable by construction. There's
+nothing left in the pseudocode to reconstruct from. See the writeup for
+the caveat that comes with that result.
 
 ## Pipeline
 
@@ -22,20 +21,18 @@ the full writeup for the important caveat that goes with that result.
                         (+ heimdall-cff)
 ```
 
-Full description of each stage: [`../DESIGN.md`](../DESIGN.md#benchmark-harness).
+Stage-by-stage description: [`../DESIGN.md`](../DESIGN.md#benchmark-harness).
 
 ## Requirements
 
 - A built `HeimdallCFF` plugin (see the top-level [README](../README.md#build))
   and `opt` on `PATH` (or pass `--opt`).
-- [Ghidra](https://ghidra-sre.org/) installed locally; set `GHIDRA_INSTALL_DIR`
-  or pass `--ghidra-dir`. Confirmed working against 12.1.4. Note: Ghidra
-  11.3+ requires PyGhidra to run a `.py` postScript at all (a Jython-style
-  script fails headless analysis outright without it), which is why
-  `ghidra_scripts/DecompileFunctions.java` is a plain `GhidraScript`
-  instead -- no extra setup needed.
+- [Ghidra](https://ghidra-sre.org/), `GHIDRA_INSTALL_DIR` set or
+  `--ghidra-dir` passed. Tested against 12.1.4. Ghidra 11.3+ needs
+  PyGhidra to run a `.py` postScript at all, which is why
+  `ghidra_scripts/DecompileFunctions.java` is plain Java instead.
 - `pip install -r requirements.txt`
-- `ANTHROPIC_API_KEY` set in the environment.
+- `ANTHROPIC_API_KEY` set.
 
 ## Running
 
@@ -48,42 +45,36 @@ python harness.py \
   --out-dir results
 ```
 
-Writes `results/results.json` (raw data) and `results/RESULTS.md` (the
-human-readable report, linked from the top-level README once generated).
+Writes `results/results.json` and `results/RESULTS.md`.
 
 ## Scoring
 
-- **Behavioral accuracy**: the LLM's reconstructed C is compiled and run
-  against a fixed set of CLI inputs per sample program; its (exit code,
-  stdout) is compared byte-for-byte against the ground-truth binary.
-- **Descriptive score**: a second LLM call judges (0-5) whether the first
-  LLM's plain-English explanation of the program correctly identifies its
-  actual purpose, against a human-written ground-truth description.
+- **Behavioral accuracy**: the reconstructed C is compiled and run against
+  a fixed set of CLI inputs; its (exit code, stdout) is compared to the
+  ground-truth binary.
+- **Descriptive score**: a second LLM call judges 0-5 whether the
+  explanation identifies the program's real purpose against a
+  human-written ground-truth description.
 
-Both are computed separately for the plain and flattened binary of each
-sample program; the gap between them is the headline result.
+Computed separately for plain and flattened; the gap is the headline
+result.
 
 ## Limitations
 
-- Three sample programs is a starting point, not a statistically powerful
-  benchmark. Treat results as illustrative and grow the sample set before
-  citing numbers as general claims.
-- The harness reconstructs the whole decompiled program in one LLM call
-  rather than function-by-function, so it also measures the LLM's ability to
-  infer `main`'s argv handling, not just the obfuscated function body.
-- Ghidra is one decompiler; results may not generalize to IDA/Binary Ninja
-  AI-assist plugins, which use different decompilation output.
+- Three sample programs. Illustrative, not a statistically powerful
+  sample; grow it before citing these numbers as general claims.
+- One LLM call reconstructs the whole decompiled program, so it also
+  measures the model's ability to infer `main`'s argv handling, not just
+  the obfuscated function.
+- Ghidra only; IDA/Binary Ninja AI-assist plugins use different
+  decompiler output and may not generalize.
 - A binary that statically links its CRT decompiles to 25+ functions,
-  almost all identical CRT startup code neither variant's obfuscation
-  touches. `run_one` filters to each program's `relevant_functions` before
-  handing anything to the model; a new sample program needs that list
-  populated (check which of its functions actually show up standalone
-  after `-O1` -- small static helpers are often inlined into their caller
-  and never appear on their own).
-- The first real run found that Ghidra's decompiler can fail outright on a
-  flattened function rather than merely produce harder-to-read code (see
-  [`results/RESULTS.md`](results/RESULTS.md)). When that happens, the
-  "behavioral"/"descriptive" scores stop measuring the model's reasoning
-  and start measuring "what does a reconstruction built from almost no
-  information default to" -- still a meaningful result for this project's
-  threat model, but worth checking for per sample rather than assumed.
+  most of them CRT startup code neither variant touches. `run_one` filters
+  to each program's `relevant_functions`; a new sample needs that list
+  populated (check which functions actually show up standalone after
+  `-O1`, since small static helpers often get inlined into their caller).
+- When Ghidra's decompiler fails outright on a flattened function (see
+  results), the behavioral/descriptive scores stop measuring reasoning
+  and start measuring "what a near-empty reconstruction defaults to."
+  Still meaningful for this project's threat model, but worth checking
+  per sample.
